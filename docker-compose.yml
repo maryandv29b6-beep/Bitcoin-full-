@@ -1,0 +1,26 @@
+# docker compose up -d            -> live public data, UI on http://127.0.0.1:8000
+# docker compose --profile demo up -> synthetic DEMO data on http://127.0.0.1:8001
+services:
+  flowlens:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - flowlens-data:/data
+      - ./config:/config:ro          # optional: config/flowlens.config.json
+    restart: unless-stopped
+
+  flowlens-demo:
+    profiles: ["demo"]
+    build: .
+    command: ["python", "-m", "flowlens", "serve", "--demo"]
+    environment:
+      - FLOWLENS_DB_PATH=/data/demo.db
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - flowlens-demo-data:/data
+
+volumes:
+  flowlens-data: {}
+  flowlens-demo-data: {}

@@ -6,7 +6,7 @@ export interface Instrument {
   key: string; exchange: string; market: string; symbol: string; base: string; quote: string;
   tickSize: string; quantityStep: string; demo: boolean; status: string; ready: boolean;
   last_price: Num; ticker: { last?: number; change_pct?: number; volume_quote?: number; volume_base?: number } | null;
-  steps: { footprint: string | null; heatmap: string | null }; sync_rules: string;
+  steps: { footprint: string | null; heatmap: string | null }; sync_rules: string; last_error: string | null;
   contractSpec: Record<string, unknown>;
 }
 

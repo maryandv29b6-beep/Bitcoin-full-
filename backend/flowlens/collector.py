@@ -306,7 +306,8 @@ class Collector:
         return self._rest[key]
 
     async def start(self) -> None:
-        self.session = aiohttp.ClientSession(headers={"User-Agent": "FlowLens/1.0 (market data terminal)"})
+        # trust_env: honour HTTP(S)_PROXY / NO_PROXY from the environment
+        self.session = aiohttp.ClientSession(headers={"User-Agent": "FlowLens/1.0 (market data terminal)"}, trust_env=True)
         for icfg in self.cfg.instrument_cfgs():
             rt = InstrumentRuntime(self, icfg)
             self.runtimes[rt.inst.key] = rt

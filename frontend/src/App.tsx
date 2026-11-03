@@ -84,7 +84,7 @@ export default function App() {
     const seq = ++loadSeq.current;
     if (!quiet) setLoading(true);
     try {
-      const from = Date.now() - RANGES[settings.range];
+      const from = Date.now() - rangeMs(settings);
       const d = await api.chart(inst.key, tf, from, settings.params);
       if (seq !== loadSeq.current) return;
       const fresh = !dataRef.current || dataRef.current.inst !== d.inst || dataRef.current.tf !== d.tf;
@@ -107,7 +107,7 @@ export default function App() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [inst?.key, inst?.ready, tf, settings.range, paramsKey]);
+  }, [inst?.key, inst?.ready, tf, settings.range, settings.customDays, paramsKey]);
 
   useEffect(() => { scale.setTf(TF_MS[tf]); setYManual(null); }, [tf, inst?.key]);
   useEffect(() => { dataRef.current = null; setData(null); setFp(null); setProfile(null); setHeat(null); load(); }, [load]);
@@ -116,11 +116,11 @@ export default function App() {
   const loadHeat = useCallback(async () => {
     if (!inst || settings.bookLayer !== "heatmap") return;
     try {
-      const from = Date.now() - RANGES[settings.range];
+      const from = Date.now() - rangeMs(settings);
       const m = await api.heatmap(inst.key, tf, from, settings.heatAgg);
       setHeat((prev) => buildHeatCanvas(m, settings, prev));
     } catch { setHeat(null); }
-  }, [inst?.key, tf, settings.range, settings.bookLayer, settings.heatAgg]);
+  }, [inst?.key, tf, settings.range, settings.customDays, settings.bookLayer, settings.heatAgg]);
   useEffect(() => { loadHeat(); }, [loadHeat]);
   useEffect(() => { setHeat((h) => (h ? paintHeat(h, settings) : h)); }, [settings.heatUnits, settings.heatScale, settings.heatMin, settings.heatMax]);
 
@@ -306,7 +306,11 @@ export default function App() {
             <option value="bands">Полосы дисбаланса</option><option value="heatmap">Карта глубины</option><option value="off">Без слоя стакана</option>
           </select>
           <label className="inline">Диапазон<select value={settings.range} onChange={(e) => update({ range: e.target.value })}>
-            {Object.keys(RANGES).map((r) => <option key={r} value={r}>{r}</option>)}</select></label>
+            {Object.keys(RANGES).map((r) => <option key={r} value={r}>{r}</option>)}<option value="custom">свой</option></select></label>
+          {settings.range === "custom" && (
+            <label className="inline">дней<input className="step-input" type="number" min={0.1} max={14} step={0.5} value={settings.customDays}
+              onChange={(e) => update({ customDays: Math.max(0.1, Math.min(14, Number(e.target.value) || 1)) })} /></label>
+          )}
           <label className="inline">База<select value={settings.params.z_base} onChange={(e) => update({ params: { ...settings.params, z_base: e.target.value } })}>
             {BASES.map((b) => <option key={b}>{b}</option>)}</select></label>
           <span className="spacer" />
@@ -319,6 +323,13 @@ export default function App() {
       )}
 
       {err && <div className="banner warn">{err}</div>}
+      {instruments.length > 0 && !instruments.some((i) => i.ready) && (
+        <div className="banner warn">
+          Коллектор пока не может получить данные бирж и повторяет попытки. Проверьте доступ к интернету и к Binance/Bybit
+          (в некоторых странах они закрыты) или запустите DEMO: <code>run.sh --demo</code>.
+          {instruments.filter((i) => i.last_error).slice(0, 3).map((i) => <div key={i.key} className="small">{i.key}: {i.last_error}</div>)}
+        </div>
+      )}
       {data && data.source.demo && view === "chart" && <div className="banner demo">DEMO: синтетический рынок для проверки интерфейса. Это не данные биржи.</div>}
 
       <div className="body">
@@ -397,6 +408,10 @@ export default function App() {
       <div ref={tipRef} className="tooltip" hidden />
     </div>
   );
+}
+
+function rangeMs(s: Settings): number {
+  return s.range === "custom" ? s.customDays * 86_400_000 : RANGES[s.range] ?? RANGES["1d"];
 }
 
 function stepChoices(inst: Instrument, d: ChartData | null): number[] {

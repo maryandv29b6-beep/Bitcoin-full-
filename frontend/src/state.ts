@@ -41,6 +41,7 @@ export interface Settings {
   favorites: string[];
   tf: string;
   range: string;
+  customDays: number;
   chartMode: "candles" | "line" | "footprint";
   profile: boolean;
   bookLayer: "bands" | "heatmap" | "off";
@@ -69,6 +70,7 @@ export const DEFAULT_SETTINGS: Settings = {
   favorites: [],
   tf: "5m",
   range: "1d",
+  customDays: 5,
   chartMode: "candles",
   profile: true,
   bookLayer: "bands",

@@ -38,6 +38,7 @@ class MockExchange:
             self.trades[s] = deque(maxlen=200000)
             self.last_u[s] = self.sims[s].update_id
         self.clients: List[tuple] = []   # (ws, set(streams), kind)
+        self.bybit_clients: List[dict] = []  # {"ws", "topics", "category", "books": {topic: (bids, asks)}, "u": {topic: int}}
         self.faults: Dict[str, Dict[str, int]] = {s: {} for s in symbols}
         self.weight = 0
         self.sent = 0
@@ -69,6 +70,8 @@ class MockExchange:
                     if f.get("dup_trades", 0) > 0:
                         f["dup_trades"] -= 1
                         await self._broadcast(f"{lo}@aggTrade", d)
+                if self.bybit_clients:
+                    await self._bybit_push(s, sim, trades, now)
                 if now % 1000 < 100:
                     await self._broadcast(f"{lo}@markPrice@1s", {"e": "markPriceUpdate", "E": now, "s": s,
                                                                  "p": f"{sim.mid:.2f}", "r": "0.00010000",
@@ -182,6 +185,111 @@ class MockExchange:
                 self.clients.remove(item)
         return ws
 
+    # ---- Bybit v5 emulation (public topics) ----------------------------------------
+    @staticmethod
+    def _top(sim: MarketSim, depth: int):
+        from . import numeric
+        bids = dict(sorted(sim.bids.items(), reverse=True)[:depth])
+        asks = dict(sorted(sim.asks.items())[:depth])
+        return bids, asks
+
+    async def _bybit_push(self, s: str, sim: MarketSim, trades: List[dict], now: int) -> None:
+        from . import numeric
+        for c in list(self.bybit_clients):
+            ws = c["ws"]
+            try:
+                for topic in list(c["topics"]):
+                    kind, _, rest = topic.partition(".")
+                    if kind == "orderbook" and rest.endswith(s):
+                        depth = int(rest.split(".")[0])
+                        nb, na = self._top(sim, depth)
+                        ob, oa = c["books"].get(topic, ({}, {}))
+                        db = [[numeric.fmt(p), numeric.fmt(q)] for p, q in nb.items() if ob.get(p) != q]
+                        db += [[numeric.fmt(p), "0"] for p in ob if p not in nb]
+                        da = [[numeric.fmt(p), numeric.fmt(q)] for p, q in na.items() if oa.get(p) != q]
+                        da += [[numeric.fmt(p), "0"] for p in oa if p not in na]
+                        c["books"][topic] = (nb, na)
+                        if db or da:
+                            c["u"][topic] = c["u"].get(topic, 0) + 1
+                            await ws.send_json({"topic": topic, "type": "delta", "ts": now, "cts": now,
+                                                "data": {"s": s, "b": db, "a": da, "u": c["u"][topic], "seq": now}})
+                    elif kind == "publicTrade" and rest == s and trades:
+                        await ws.send_json({"topic": topic, "type": "snapshot", "ts": now, "data": [
+                            {"T": d["T"], "s": s, "S": "Sell" if d["m"] else "Buy", "v": d["q"], "p": d["p"],
+                             "i": f"t-{d['a']}", "BT": False} for d in trades]})
+                    elif kind == "tickers" and rest == s and now % 1000 < 100:
+                        data = {"symbol": s, "lastPrice": f"{sim.mid:.2f}", "price24hPcnt": "0.0042",
+                                "turnover24h": f"{12345.6 * sim.mid:.2f}", "volume24h": "12345.6"}
+                        if c["category"] == "linear":
+                            data.update({"markPrice": f"{sim.mid:.2f}", "openInterest": "51234.5",
+                                         "openInterestValue": f"{51234.5 * sim.mid:.2f}", "fundingRate": "0.0001",
+                                         "nextFundingTime": str(now - now % 28800000 + 28800000)})
+                        await ws.send_json({"topic": topic, "type": "snapshot", "ts": now, "data": data})
+            except Exception:
+                pass
+
+    async def bybit_ws(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        c = {"ws": ws, "topics": set(), "category": request.match_info["category"], "books": {}, "u": {}}
+        self.bybit_clients.append(c)
+        from . import numeric
+        try:
+            async for msg in ws:
+                try:
+                    data = json.loads(msg.data)
+                except (ValueError, TypeError):
+                    continue
+                if data.get("op") == "ping":
+                    await ws.send_json({"op": "pong", "success": True})
+                elif data.get("op") == "subscribe":
+                    for topic in data.get("args", []):
+                        c["topics"].add(topic)
+                        if topic.startswith("orderbook."):
+                            depth, sym = topic.split(".")[1:3]
+                            sim = self.sims.get(sym)
+                            if sim is None:
+                                continue
+                            nb, na = self._top(sim, int(depth))
+                            c["books"][topic] = (nb, na)
+                            c["u"][topic] = 1000
+                            await ws.send_json({"topic": topic, "type": "snapshot", "ts": int(time.time() * 1000),
+                                                "data": {"s": sym, "u": 1000, "seq": 1,
+                                                         "b": [[numeric.fmt(p), numeric.fmt(q)] for p, q in nb.items()],
+                                                         "a": [[numeric.fmt(p), numeric.fmt(q)] for p, q in na.items()]}})
+                    await ws.send_json({"success": True, "op": "subscribe"})
+        finally:
+            if c in self.bybit_clients:
+                self.bybit_clients.remove(c)
+        return ws
+
+    async def bybit_instruments(self, request: web.Request) -> web.Response:
+        s = self._sym(request)
+        sim = self.sims[s]
+        lin = request.query.get("category") == "linear"
+        it = {"symbol": s, "baseCoin": s.replace("USDT", ""), "quoteCoin": "USDT", "priceFilter": {"tickSize": sim.tick_s},
+              "lotSizeFilter": {"qtyStep": sim.step_s} if lin else {"basePrecision": sim.step_s}}
+        if lin:
+            it.update({"contractType": "LinearPerpetual", "settleCoin": "USDT", "fundingInterval": 480})
+        return web.json_response({"retCode": 0, "result": {"list": [it]}})
+
+    async def bybit_tickers(self, request: web.Request) -> web.Response:
+        s = self._sym(request)
+        return web.json_response({"retCode": 0, "result": {"list": [{"symbol": s, "lastPrice": f"{self.sims[s].mid:.2f}"}]}})
+
+    async def bybit_kline(self, request: web.Request) -> web.Response:
+        s = self._sym(request)
+        end = int(request.query.get("end", time.time() * 1000))
+        start = int(request.query.get("start", end - 200 * 60000))
+        limit = int(request.query.get("limit", 200))
+        start = max(start - start % 60000, end - end % 60000 - limit * 60000)
+        rows = self.sims[s].klines(start, end - end % 60000, seed=9)
+        out = [[str(r[0]), r[1], r[2], r[3], r[4], r[5], r[7]] for r in rows][::-1]
+        return web.json_response({"retCode": 0, "result": {"list": out}})
+
+    async def bybit_empty(self, request: web.Request) -> web.Response:
+        return web.json_response({"retCode": 0, "result": {"list": []}})
+
     def app(self) -> web.Application:
         app = web.Application()
         r = app.router
@@ -198,6 +306,12 @@ class MockExchange:
         r.add_get("/stream", self.ws)
         r.add_get("/public/stream", self.ws)
         r.add_get("/market/stream", self.ws)
+        r.add_get("/v5/public/{category}", self.bybit_ws)
+        r.add_get("/v5/market/instruments-info", self.bybit_instruments)
+        r.add_get("/v5/market/tickers", self.bybit_tickers)
+        r.add_get("/v5/market/kline", self.bybit_kline)
+        r.add_get("/v5/market/open-interest", self.bybit_empty)
+        r.add_get("/v5/market/funding/history", self.bybit_empty)
         r.add_post("/admin/fault", self.fault)
         r.add_get("/admin/stats", self.stats)
 

@@ -124,3 +124,21 @@ def test_trade_sequence_gaps_and_duplicates():
     assert t.check(13) == (False, None)       # duplicate
     assert t.holes == [[12, 12], [14, 14]]
     assert t.check(11) == (False, None) and t.duplicates == 2
+
+
+def test_spot_reordered_events():
+    book = LocalBook()
+    s = BinanceSpotSync(book, 5000)
+    s.on_message(ev(100, 105))
+    s.on_snapshot(SNAP)                                   # id 105
+    # 108..109 arrives before 106..107: it is a gap for the documented rule -> resync
+    acts = s.on_message(ev(108, 109, b=[("100", "9")]))
+    assert acts == ["gap", "need_snapshot"] and not book.valid
+    # the late 106..107 event is buffered, then dropped by the next snapshot (u <= lastUpdateId)
+    s.on_message(ev(106, 107))
+    snap = {"lastUpdateId": 109, "bids": [["100", "9"]], "asks": [["101", "1"]]}
+    assert s.on_snapshot(snap) == ["synced"]
+    assert book.update_id == 109 and book.bids[numeric.parse("100")] == numeric.parse("9")
+    # an old event after sync is ignored, it cannot overwrite newer state
+    s.on_message(ev(104, 105, b=[("100", "1")]))
+    assert book.bids[numeric.parse("100")] == numeric.parse("9")

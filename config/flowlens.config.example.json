@@ -1,0 +1,16 @@
+{
+  "port": 8000,
+  "db_path": "data/flowlens.db",
+  "instruments": [
+    {"exchange": "binance", "market": "spot", "symbol": "BTCUSDT"},
+    {"exchange": "binance", "market": "spot", "symbol": "ETHUSDT"},
+    {"exchange": "binance", "market": "perp", "symbol": "BTCUSDT"},
+    {"exchange": "bybit", "market": "spot", "symbol": "BTCUSDT"},
+    {"exchange": "bybit", "market": "perp", "symbol": "BTCUSDT"}
+  ],
+  "heatmap_range_pct": 3.0,
+  "kline_backfill_days": 3,
+  "retention_days": 14,
+  "record_raw": false,
+  "raw_retention_hours": 6
+}

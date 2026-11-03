@@ -103,6 +103,18 @@ async def scenario(tmp_path):
                     m = await ws.receive(timeout=5)
                     got.append(json.loads(m.data))
                 res["ws"] = got
+                # switching the instrument replaces the subscription
+                await ws.send_json({"op": "sub", "inst": "binance:perp:BTCUSDT", "tf": "1m"})
+                seen = set()
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 5:
+                    m = json.loads((await ws.receive(timeout=5)).data)
+                    if m.get("type") == "live":
+                        seen.add(m["inst"])
+                        if "binance:perp:BTCUSDT" in seen and len(seen) == 1:
+                            break
+                        seen = {m["inst"]} if m["inst"] == "binance:perp:BTCUSDT" else seen
+                res["switched"] = seen
         res["quality"] = [k for _, k, _ in rt.events]
         res["perp_deriv"] = perp.deriv_state
     finally:
@@ -149,4 +161,5 @@ def test_end_to_end_with_faults(tmp_path):
     assert rows["binance:spot:BTCUSDT"]["spread_bps"] is not None
     assert rows["binance:perp:BTCUSDT"]["funding"] == 0.0001
     assert any(m.get("type") == "live" and m.get("candle") for m in res["ws"])
+    assert res["switched"] == {"binance:perp:BTCUSDT"}
     assert res["perp_deriv"].open_interest == 81234.5

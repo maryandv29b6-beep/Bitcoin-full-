@@ -154,6 +154,7 @@ class Api:
             d["steps"] = {"footprint": fmt(int(rt.meta.get("footprint_step", 0))) if rt.meta else None,
                           "heatmap": fmt(int(rt.meta.get("heatmap_step", 0))) if rt.meta else None}
             d["sync_rules"] = rt.sync.name
+            d["last_error"] = rt.errors[-1][1] if rt.errors else None
             out.append(d)
         return jresp({"instruments": out})
 

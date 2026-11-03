@@ -88,7 +88,6 @@ class Screener:
             drows = await self.c.storage.run(q_depth, rt.iid, now - 86400_000 - 2 * MIN_MS, now)
             for side, idx in (("bid", 1), ("ask", 3)):
                 x = [r["bands"].get("0.01", [None] * 6)[idx] if r["samples"] >= 30 else None for r in drows]
-                z, st = ind.zscore(x + [None], min(1440, max(1, len(x))), 30, 0.9) if x else ([None], ["warmup"])
                 out[f"z_{side}_1"] = None
                 out[f"z_{side}_1_status"] = "warmup"
                 if x:
