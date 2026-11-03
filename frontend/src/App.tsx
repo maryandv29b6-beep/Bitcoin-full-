@@ -5,7 +5,7 @@ import { PanelCanvas, PanelModel, buildPanel, legendValues } from "./chart/Panel
 import { HoverBus, TimeScale } from "./chart/engine";
 import { Alerts, Screener, SettingsDrawer } from "./Pages";
 import { RightColumn } from "./Side";
-import { BASES, ChartData, EXCHANGE_LABEL, Footprint, Instrument, Live, LiveMsg, MARKET_LABEL, Profile, RANGES, TF_MS,
+import { BASES, ChartData, EXCHANGE_LABEL, Footprint, Instrument, Live, LiveMsg, MARKET_LABEL, Profile, RANGES, SNAPSHOT, TF_MS,
   ago, api, dateTime, fmtCompact, fmtNum, fmtPrice, fmtSigned } from "./lib";
 import { PANEL_INFO, Settings, TABS, loadLocal, loadRemote, merge, save } from "./state";
 
@@ -38,6 +38,7 @@ export default function App() {
   const [mobileRight, setMobileRight] = useState(false);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [snap, setSnap] = useState<{ created: number; params: Record<string, unknown>; note: string } | null>(null);
   const [now, setNow] = useState(Date.now());
   const scale = useMemo(() => new TimeScale(), []);
   const hover = useMemo(() => new HoverBus(), []);
@@ -48,6 +49,13 @@ export default function App() {
   // ---- bootstrap -------------------------------------------------------------
   useEffect(() => {
     Promise.all([loadRemote(), api.meta().catch(() => null)]).then(([r, meta]) => {
+      if (SNAPSHOT && meta?.snapshot) {
+        // the snapshot was computed with fixed parameters: show exactly those
+        const sp = meta.snapshot;
+        setSnap(sp);
+        setSettings((s) => ({ ...s, params: { ...s.params, ...sp.params } }));
+        return;
+      }
       if (r) setSettings((s) => merge({ ...r, inst: s.inst || r.inst }));
       else if (meta?.demo) {
         // DEMO starts with a few hours of synthetic history: use a 4 h statistics base
@@ -233,7 +241,7 @@ export default function App() {
   const fpStepOptions = inst?.symbol.startsWith("BTC") ? [10, 20, 50] : inst ? stepChoices(inst, data) : [];
 
   return (
-    <div className="app">
+    <div className={"app" + (SNAPSHOT ? " snapshot" : "")}>
       <header className="top">
         <div className="brand">FlowLens</div>
         <nav className="views" aria-label="Разделы">
@@ -263,7 +271,8 @@ export default function App() {
             {st?.latency_ms?.book !== null && st?.latency_ms?.book !== undefined ? `стакан ${Math.round(st.latency_ms.book)} мс` : ""}
             {st?.latency_ms?.trades !== null && st?.latency_ms?.trades !== undefined ? ` · сделки ${Math.round(st.latency_ms.trades)} мс` : ""}
           </span>
-          {!uiConn && <span className="badge s-STALE" title="Нет WebSocket-соединения с сервером FlowLens">UI offline</span>}
+          {!uiConn && !SNAPSHOT && <span className="badge s-STALE" title="Нет WebSocket-соединения с сервером FlowLens">UI offline</span>}
+          {SNAPSHOT && <span className="badge s-SNAP" title="Статичный снимок, без живого обновления">СНИМОК{snap ? ` ${dateTime(snap.created)}` : ""}</span>}
         </div>
         <button className="icon mobile-only" onClick={() => setMobileRight(true)} aria-label="Инструменты и индикаторы">☰</button>
       </header>
@@ -311,7 +320,7 @@ export default function App() {
             <label className="inline">дней<input className="step-input" type="number" min={0.1} max={14} step={0.5} value={settings.customDays}
               onChange={(e) => update({ customDays: Math.max(0.1, Math.min(14, Number(e.target.value) || 1)) })} /></label>
           )}
-          <label className="inline">База<select value={settings.params.z_base} onChange={(e) => update({ params: { ...settings.params, z_base: e.target.value } })}>
+          <label className="inline">База<select value={settings.params.z_base} disabled={SNAPSHOT} title={SNAPSHOT ? "В снимке база зафиксирована" : "База статистики z-score"} onChange={(e) => update({ params: { ...settings.params, z_base: e.target.value } })}>
             {BASES.map((b) => <option key={b}>{b}</option>)}</select></label>
           <span className="spacer" />
           <button onClick={() => { update({ rightOpen: true }); setMobileRight(true); }}>Индикаторы</button>
@@ -330,7 +339,13 @@ export default function App() {
           {instruments.filter((i) => i.last_error).slice(0, 3).map((i) => <div key={i.key} className="small">{i.key}: {i.last_error}</div>)}
         </div>
       )}
-      {data && data.source.demo && view === "chart" && <div className="banner demo">DEMO: синтетический рынок для проверки интерфейса. Это не данные биржи.</div>}
+      {SNAPSHOT && (
+        <div className="banner demo">
+          Статичный снимок FlowLens{snap ? ` от ${dateTime(snap.created)}` : ""}: DEMO, синтетический рынок, это не данные биржи.
+          Живое обновление, реальные Binance/Bybit, алерты и смена параметров расчёта работают при запуске у себя: <code>run.bat</code> или <code>./run.sh</code>.
+        </div>
+      )}
+      {!SNAPSHOT && data && data.source.demo && view === "chart" && <div className="banner demo">DEMO: синтетический рынок для проверки интерфейса. Это не данные биржи.</div>}
 
       <div className="body">
         <main className="main" ref={areaRef}>

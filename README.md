@@ -214,6 +214,17 @@ npm run dev        # http://localhost:5173, API проксируется на :8
 npm run build      # сборка в backend/flowlens/static
 ```
 
+### Статичный снимок для просмотра без сервера
+
+Из работающего сервера можно выгрузить снимок всего интерфейса (только просмотр,
+без живого обновления):
+
+```bash
+cd frontend && VITE_SNAPSHOT=1 npx vite build --outDir ../snapshot --emptyOutDir
+cd ../backend && python tools/export_snapshot.py --server http://127.0.0.1:8000 --out ../snapshot
+cd ../snapshot && python -m http.server 8090   # http://127.0.0.1:8090
+```
+
 Прочее: `python -m flowlens mock-exchange --port 9100 --symbols BTCUSDT,ETHUSDT`
 поднимает тестовую биржу; `python -m flowlens replay файлы.jsonl.gz
 --fp-step 5 --heat-step 10` воспроизводит запись.

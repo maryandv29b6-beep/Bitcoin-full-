@@ -63,7 +63,38 @@ export const TF_MS: Record<string, number> = { "1m": 60_000, "5m": 300_000, "15m
 export const RANGES: Record<string, number> = { "1d": 86_400_000, "2d": 172_800_000, "3d": 259_200_000, "7d": 604_800_000, "14d": 1_209_600_000 };
 export const BASES = ["1h", "4h", "12h", "1d", "3d", "7d", "14d"];
 
+/** Snapshot build (VITE_SNAPSHOT=1): the UI reads JSON files exported from a running
+ * server instead of the API, and is read-only. Used to publish a static preview. */
+export const SNAPSHOT: boolean = (import.meta as any).env?.VITE_SNAPSHOT === "1";
+
+const slug = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "_");
+
+function snapshotFile(path: string, p: Record<string, string | number | undefined>): string | null {
+  const inst = slug(String(p.inst || ""));
+  switch (path) {
+    case "/api/meta": return "data/meta.json";
+    case "/api/instruments": return "data/instruments.json";
+    case "/api/chart": return `data/chart/${inst}_${p.tf}.json`;
+    case "/api/heatmap": return `data/heat/${inst}_${p.tf}_${p.agg || "mean"}.json`;
+    case "/api/footprint": return `data/fp/${inst}_${p.tf}.json`;
+    case "/api/profile": return `data/profile/${inst}.json`;
+    case "/api/screener": return "data/screener.json";
+    case "/api/health": return "data/health.json";
+    case "/api/alerts": return "data/alerts.json";
+    case "/api/alerts/log": return "data/alerts_log.json";
+    case "/api/telegram": return "data/telegram.json";
+  }
+  return null;
+}
+
 async function getJSON<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
+  if (SNAPSHOT) {
+    const f = snapshotFile(path, params || {});
+    if (!f) throw new Error("нет в снимке");
+    const r = await fetch(f);
+    if (!r.ok) throw new Error(`нет в снимке (${f})`);
+    return r.json() as Promise<T>;
+  }
   const q = params ? "?" + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)])).toString() : "";
   const r = await fetch(path + q);
   if (!r.ok) {
@@ -75,6 +106,7 @@ async function getJSON<T>(path: string, params?: Record<string, string | number 
 }
 
 async function sendJSON<T>(method: string, path: string, body: unknown): Promise<T> {
+  if (SNAPSHOT) throw new Error("это статичный снимок, изменения доступны при локальном запуске FlowLens");
   const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error((data as { error?: string }).error || `HTTP ${r.status}`);
@@ -82,7 +114,8 @@ async function sendJSON<T>(method: string, path: string, body: unknown): Promise
 }
 
 export const api = {
-  meta: () => getJSON<{ demo: boolean; version: string; defaults: Record<string, unknown>; alert_metrics: Record<string, string>; alert_ops: string[] }>("/api/meta"),
+  meta: () => getJSON<{ demo: boolean; version: string; defaults: Record<string, unknown>; alert_metrics: Record<string, string>; alert_ops: string[];
+    snapshot?: { created: number; params: Record<string, unknown>; note: string } }>("/api/meta"),
   instruments: () => getJSON<{ instruments: Instrument[] }>("/api/instruments"),
   chart: (inst: string, tf: string, from: number, params: Record<string, unknown>) =>
     getJSON<ChartData>("/api/chart", { inst, tf, from, params: JSON.stringify(params) }),
@@ -98,7 +131,7 @@ export const api = {
   alerts: () => getJSON<{ rules: AlertRule[]; metrics: Record<string, string>; ops: string[] }>("/api/alerts"),
   addAlert: (instrument: string, rule: Record<string, unknown>) => sendJSON("POST", "/api/alerts", { instrument, rule }),
   patchAlert: (id: number, enabled: boolean) => sendJSON("PATCH", `/api/alerts/${id}`, { enabled }),
-  deleteAlert: (id: number) => fetch(`/api/alerts/${id}`, { method: "DELETE" }),
+  deleteAlert: (id: number) => (SNAPSHOT ? Promise.reject(new Error("снимок")) : fetch(`/api/alerts/${id}`, { method: "DELETE" })),
   alertLog: () => getJSON<{ log: { id: number; rule_id: number; t: number; message: string; data: Record<string, unknown>; delivery: string }[] }>("/api/alerts/log"),
   telegram: () => getJSON<{ enabled: boolean; chat_id: string; token_set: boolean; token_hint: string }>("/api/telegram"),
   putTelegram: (body: Record<string, unknown>) => sendJSON<{ enabled: boolean; chat_id: string; token_set: boolean; token_hint: string }>("PUT", "/api/telegram", body),
@@ -126,7 +159,7 @@ export class Live {
   private retry = 1000;
   private closed = false;
 
-  constructor() { this.open(); }
+  constructor() { if (!SNAPSHOT) this.open(); }
 
   private open() {
     const proto = location.protocol === "https:" ? "wss" : "ws";

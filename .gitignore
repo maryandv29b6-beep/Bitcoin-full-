@@ -11,3 +11,4 @@ venv/
 frontend/dist/
 flowlens.config.json
 config/flowlens.config.json
+snapshot/

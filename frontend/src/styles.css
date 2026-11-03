@@ -57,6 +57,9 @@ code { font-family: var(--f-num); font-size: 11px; color: var(--fg); }
 .badge.s-RESYNC { color: #ff9b4a; border-color: #6a3b14; background: #22150a; }
 .badge.s-ERROR { color: var(--dn); border-color: #6a2124; background: #220d0e; }
 .badge.s-DEMO { color: #cdb6ff; border-color: #4c3685; background: #171126; }
+.badge.s-SNAP { color: #ffd99a; border-color: #5d4615; background: #1f190c; }
+/* published snapshot: keep a side gutter that also clears phone system bars */
+.app.snapshot { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 .demo-note { font-size: 11px; color: #cdb6ff; }
 
 .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 5px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertRule, BASES, Instrument, ScreenerRow, api, dateTime, fmtCompact, fmtNum, fmtPrice, fmtSigned } from "./lib";
+import { AlertRule, BASES, Instrument, SNAPSHOT, ScreenerRow, api, dateTime, fmtCompact, fmtNum, fmtPrice, fmtSigned } from "./lib";
 import { Settings } from "./state";
 
 // ---- screener (extension) ------------------------------------------------------
@@ -179,6 +179,7 @@ export function SettingsDrawer({ settings, update, close, health }: { settings: 
   return (
     <div className="drawer" role="dialog" aria-label="Настройки">
       <div className="drawer-head"><h3>Настройки</h3><button onClick={close} aria-label="Закрыть">×</button></div>
+      {SNAPSHOT && <p className="muted small">В статичном снимке параметры расчёта зафиксированы. Отображение (карта глубины, палитра) меняется.</p>}
       <section>
         <h4>Единицы</h4>
         <label>Суммы стакана и сделок<select value={prm.units} onChange={(e) => setP("units", e.target.value)}>
