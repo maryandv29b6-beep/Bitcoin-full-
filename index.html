@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Поток ордеров BTC</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600&display=swap">
+<style>
+/* Layout: торговый терминал — верхняя панель, три синхронных холста (цена, волны объёма, стакан) с общей шкалой времени и правой осью */
+:root{
+  --bg:#0a0d13; --panel:#0e121a; --line:#1b2230; --grid:#151b27; --fg:#d9dee8; --muted:#6c768a;
+  --buy:#2fbf5b; --buy-hi:#e3f04c; --sell:#e5484d; --sell-hi:#c04ee8; --mixed:#3c5a48; --price:#f3f5f9; --accent:#5b8dff; --warn:#f0b43c;
+  --f-ui:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-num:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.35 var(--f-ui);display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;padding-block:8px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:12px;color:var(--muted)}
+.px{font:600 18px var(--f-num);font-variant-numeric:tabular-nums}
+.chg{font:12px var(--f-num)}
+.chg.up{color:var(--buy)} .chg.dn{color:var(--sell)}
+.ctrl{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+select,button{font:12px var(--f-ui);color:var(--fg);background:#141a25;border:1px solid var(--line);border-radius:4px;padding:4px 8px;cursor:pointer}
+button[aria-pressed="true"]{border-color:var(--accent);color:#fff}
+select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.conn{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:auto}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.live{background:var(--buy);box-shadow:0 0 6px var(--buy)} .dot.demo{background:var(--warn)} .dot.err{background:var(--sell)}
+#banner{padding-block:6px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));background:#2a2012;color:#f3d79a;font-size:12px;border-bottom:1px solid #4a3818}
+.panels{flex:1;display:flex;flex-direction:column;min-height:0;touch-action:none}
+.panel{position:relative;min-height:0;border-bottom:1px solid var(--line)}
+.panel canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.p-price{flex:5}.p-waves{flex:3.2}.p-book{flex:2.2}
+.ptitle{position:absolute;top:6px;left:max(16px,env(safe-area-inset-left,0px));z-index:1;pointer-events:none;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.pstatus{position:absolute;top:5px;right:72px;z-index:1;pointer-events:none;font-weight:600;font-size:12.5px;text-align:right;max-width:70%}
+#tip{position:fixed;z-index:5;pointer-events:none;background:rgba(14,18,26,.94);border:1px solid var(--line);border-radius:4px;padding:6px 8px;font:11.5px/1.45 var(--f-num);font-variant-numeric:tabular-nums;white-space:pre}
+@media (max-width:560px){.pstatus{right:8px;top:22px;font-size:11.5px;max-width:92%}.px{font-size:16px}}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Поток ордеров</span>
+  <div class="ctrl">
+    <select id="sym" aria-label="Инструмент">
+      <option value="BTCUSDT">BTC/USDT</option>
+      <option value="ETHUSDT">ETH/USDT</option>
+      <option value="SOLUSDT">SOL/USDT</option>
+    </select>
+    <select id="src" aria-label="Источник данных">
+      <option value="futures">Binance Futures</option>
+      <option value="spot">Binance Spot</option>
+      <option value="demo">Демо-данные</option>
+    </select>
+  </div>
+  <span class="px" id="px">—</span>
+  <span class="chg" id="chg"></span>
+  <div class="ctrl" id="spans">
+    <button data-span="180">3ч</button><button data-span="360">6ч</button><button data-span="720">12ч</button><button data-span="1440" aria-pressed="true">24ч</button>
+  </div>
+  <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">загрузка…</span></div>
+</header>
+<div id="banner" hidden></div>
+<div class="panels" id="panels">
+  <div class="panel p-price"><span class="ptitle">Цена · дисбаланс агрессивных сделок</span><canvas id="cPrice"></canvas></div>
+  <div class="panel p-waves"><span class="ptitle">Волны объёма</span><span class="pstatus" id="wStatus"></span><canvas id="cWaves"></canvas></div>
+  <div class="panel p-book"><span class="ptitle">Баланс стакана ±1%</span><span class="pstatus" id="bStatus"></span><canvas id="cBook"></canvas></div>
+</div>
+<div id="tip" hidden></div>
+<script>
+"use strict";
+/* ---------- конфигурация ---------- */
+const SOURCES = {
+  futures:{name:"Binance Futures", rest:"https://fapi.binance.com/fapi/v1", ws:"wss://fstream.binance.com/stream?streams=", klineLimit:1500, depthLimit:1000},
+  spot:{name:"Binance Spot", rest:"https://api.binance.com/api/v3", ws:"wss://stream.binance.com:9443/stream?streams=", klineLimit:1000, depthLimit:5000},
+};
+const BOOK_BAND = 0.01;        // ±1% от середины
+const WAVE_ON = 1.6;           // порог волны, × к медиане
+const WAVE_LABEL = 2.5;        // подписываем волны от этого множителя
+const HI = 3;                  // «аномально»
+const MAX_BARS = 3000;
+const MIN = 60000;
+const C = Object.fromEntries(["buy","buy-hi","sell","sell-hi","mixed","price","muted","grid","fg","accent","warn","line"].map(k=>[k,getComputedStyle(document.documentElement).getPropertyValue("--"+k).trim()]));
+const FNUM = '11px "IBM Plex Mono", ui-monospace, Menlo, monospace';
+const FNUM_B = '600 11px "IBM Plex Mono", ui-monospace, Menlo, monospace';
+const FUI = '11px "IBM Plex Sans Condensed", "Arial Narrow", sans-serif';
+
+/* ---------- состояние ---------- */
+const S = {symbol:"BTCUSDT", source:"futures", bars:[], book:{}, view:{span:1440, endT:null}, hover:null, D:null,
+  dataDirty:true, drawDirty:true, lastCompute:0, ws:null, timers:[], gen:0, mode:"loading"};
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){try{return JSON.parse(localStorage.getItem(k)||"null")}catch(e){return null}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+};
+
+/* ---------- форматирование ---------- */
+function fmtUsd(v){const a=Math.abs(v);return a>=1e9?(v/1e9).toFixed(2)+"b":a>=1e6?Math.round(v/1e6)+"m":a>=1e3?Math.round(v/1e3)+"k":Math.round(v)+""}
+function fmtM(v){const a=Math.abs(v);if(a<5e5)return "0";const s=v>=0?"+":"−";return s+(a>=1e9?(a/1e9).toFixed(2)+"млрд":a>=1e6?Math.round(a/1e6)+"м":Math.round(a/1e3)+"к")}
+function fmtPx(p){return p>=1000?p.toLocaleString("ru-RU",{maximumFractionDigits:1}):p>=1?p.toFixed(3):p.toPrecision(4)}
+function hhmm(t){const d=new Date(t);return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")}
+function agoTxt(m){m=Math.max(0,Math.round(m));if(m<1)return "только что";if(m<60)return m+" мин назад";const h=Math.floor(m/60);return h+" ч "+(m%60)+" мин назад"}
+function median(a){if(!a.length)return 0;const s=Float64Array.from(a).sort();const m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2}
+
+/* ---------- данные ---------- */
+function upsertBar(b){
+  const arr=S.bars, last=arr[arr.length-1];
+  if(!last||b.t>last.t){arr.push(b);if(arr.length>MAX_BARS)arr.splice(0,arr.length-MAX_BARS)}
+  else if(b.t===last.t){arr[arr.length-1]=b}
+  else{const i=idxOf(b.t);if(arr[i]&&arr[i].t===b.t)arr[i]=b}
+  S.dataDirty=true;
+}
+function idxOf(t){const a=S.bars;let lo=0,hi=a.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(a[m].t<=t)lo=m;else hi=m-1}return lo}
+function bookKey(){return "ofb:"+S.source+":"+S.symbol}
+function saveBook(){const keys=Object.keys(S.book).map(Number).sort((a,b)=>a-b);const cut=Date.now()-3*86400e3;const o={};for(const k of keys)if(k>=cut)o[k]=S.book[k];S.book=o;store.set(bookKey(),o)}
+
+/* ---------- расчёты ---------- */
+function compute(){
+  const b=S.bars,n=b.length;
+  const D={n,ema:new Float64Array(n),r:new Float64Array(n),share:new Float64Array(n),z:new Float64Array(n),rsi:new Float64Array(n),waves:[],wins:[],base:1,bk:new Array(n),bMean:0,bStd:1};
+  if(!n){S.D=D;return}
+  const a=0.3;let e=0,eb=0;
+  for(let i=0;i<n;i++){const q=b[i].q,bu=b[i].buy;e=i?e+a*(q-e):q;eb=i?eb+a*(bu-eb):bu;D.ema[i]=e;D.share[i]=e>0?eb/e:.5}
+  D.base=median(b.map(x=>x.q))||1;
+  for(let i=0;i<n;i++)D.r[i]=D.ema[i]/D.base;
+  // дисбаланс агрессора: z-оценка дельты
+  let ss=0;for(const x of b){const d=2*x.buy-x.q;ss+=d*d}const sd=Math.sqrt(ss/n)||1;
+  for(let i=0;i<n;i++)D.z[i]=(2*b[i].buy-b[i].q)/sd;
+  // RSI(14) Уайлдера
+  let ag=0,al=0;D.rsi[0]=50;
+  for(let i=1;i<n;i++){const ch=b[i].c-b[i-1].c,g=Math.max(ch,0),l=Math.max(-ch,0);
+    if(i<=14){ag+=g/14;al+=l/14}else{ag=(ag*13+g)/14;al=(al*13+l)/14}
+    D.rsi[i]=i<14?50:(al===0?100:100-100/(1+ag/al))}
+  // волны: участки выше порога, разрывы до 3 минут склеиваются
+  let segs=[],cur=null;
+  for(let i=0;i<n;i++){if(D.r[i]>WAVE_ON){if(cur&&i-cur.e<=4)cur.e=i;else{cur={s:i,e:i};segs.push(cur)}}}
+  for(const sg of segs){let pk=sg.s,sum=0,buy=0;for(let i=sg.s;i<=sg.e;i++){if(D.r[i]>D.r[pk])pk=i;sum+=b[i].q;buy+=b[i].buy}
+    const share=buy/sum,ongoing=sg.e>=n-2,side=share>=.54?1:share<=.46?-1:0;
+    let status;if(side>0)status=ongoing?"ещё давят":"выкупили";else if(side<0)status=ongoing?"ещё тянут":"сбросили";else status="борьба";
+    D.waves.push({s:sg.s,e:sg.e,pk,peakR:D.r[pk],sum,share,side,status,ongoing,dp:b[sg.e].c/b[sg.s].o-1})}
+  // окна по 3 часа
+  const W=3*3600e3,m=new Map();
+  for(let i=0;i<n;i++){const k=Math.floor(b[i].t/W);let o=m.get(k);if(!o){o={k,s:i,e:i,sum:0,buy:0,cnt:0};m.set(k,o)}o.e=i;o.sum+=b[i].q;o.buy+=b[i].buy;o.cnt++}
+  const wins=[...m.values()],pm=median(wins.filter(w=>w.cnt>=60).map(w=>w.sum/w.cnt))||1;
+  for(const w of wins){w.ratio=(w.sum/w.cnt)/pm;w.share=w.buy/w.sum;w.cls=w.ratio>=HI?"аномально":w.ratio>=1.5?"крупно":"обычно"}
+  D.wins=wins;
+  // стакан
+  const vals=[];for(let i=0;i<n;i++){const v=S.book[b[i].t];if(v){D.bk[i]=v;vals.push(v[0])}}
+  if(vals.length){D.bMean=vals.reduce((x,y)=>x+y,0)/vals.length;D.bStd=Math.sqrt(vals.reduce((x,y)=>x+(y-D.bMean)**2,0)/vals.length)||1}
+  D.bCount=vals.length;
+  S.D=D;updateHeader();
+}
+
+function updateHeader(){
+  const b=S.bars,D=S.D,n=b.length;if(!n)return;
+  const last=b[n-1],ref=b[Math.max(0,n-1441)],ch=last.c/ref.o-1;
+  $("px").textContent=fmtPx(last.c);
+  $("chg").textContent=(ch>=0?"+":"")+(ch*100).toFixed(2)+"% за "+Math.round((last.t-ref.t)/3600e3)+" ч";
+  $("chg").className="chg "+(ch>=0?"up":"dn");
+  const now=last.t+MIN;
+  // волны
+  const w=[...D.waves].reverse().find(x=>x.peakR>=WAVE_LABEL);
+  const ws=$("wStatus");
+  if(w){const kind=w.peakR>=HI?"аномальная":"крупная",what=w.side>0?"покупок":w.side<0?"продаж":"борьбы";
+    ws.textContent="Сейчас: "+kind+" волна "+what+", "+(w.ongoing?"идёт прямо сейчас":agoTxt((now-b[w.pk].t)/MIN));
+    ws.style.color=w.side>0?C.buy:w.side<0?C.sell:C.fg}
+  else{ws.textContent="Сейчас: крупных волн нет";ws.style.color=C.muted}
+  // стакан
+  const bs=$("bStatus"),cur=S.book[last.t]||S.book[b[n-2]?.t];
+  if(!cur){bs.textContent=S.mode==="live"?"Стакан: копим данные…":"";bs.style.color=C.muted;return}
+  const z=(cur[0]-D.bMean)/D.bStd;
+  let lvl=Math.abs(z)<1?"обычный баланс стакана":(z>0?(z>=2?"сильный перевес бидов":"перевес бидов"):(z<=-2?"сильный перевес асков":"перевес асков"));
+  let hour="";const prevI=idxOf(last.t-60*MIN);const prev=S.book[b[prevI].t];
+  if(prev&&b[prevI].t<last.t-30*MIN){const d=cur[0]-prev[0];hour=" (за 1 ч "+fmtM(d)+", "+(d>=0?"биды добавляются":"аски добавляются")+")"}
+  bs.textContent="Сейчас: "+lvl+hour;
+  bs.style.color=Math.abs(z)<1?C.fg:z>0?C.buy:C.sell;
+}
+
+/* ---------- отрисовка ---------- */
+const PADL=16, AXIS=66;
+const cv={price:$("cPrice"),waves:$("cWaves"),book:$("cBook")};
+function ctx(c){const r=c.getBoundingClientRect(),d=window.devicePixelRatio||1,W=Math.round(r.width*d),H=Math.round(r.height*d);
+  if(c.width!==W||c.height!==H){c.width=W;c.height=H}const g=c.getContext("2d");g.setTransform(d,0,0,d,0,0);g.clearRect(0,0,r.width,r.height);return{g,w:r.width,h:r.height}}
+function view(w){const n=S.bars.length;if(!n)return null;
+  const end=S.view.endT==null?n-1:Math.min(n-1,idxOf(S.view.endT));const span=Math.min(S.view.span,Math.max(n,60));
+  const start=Math.max(0,end-span+1);const pw=w-PADL-AXIS,bw=pw/span;
+  return{start,end,span,bw,pw,x:i=>PADL+(i-start+.5)*bw}}
+function niceStep(range,count){const raw=range/count,p=Math.pow(10,Math.floor(Math.log10(raw))),f=raw/p;return(f<1.5?1:f<3?2:f<7?5:10)*p}
+function gridY(g,w,top,bot,lo,hi,fmt){const st=niceStep(hi-lo,4);g.font=FNUM;g.textAlign="left";g.textBaseline="middle";
+  for(let v=Math.ceil(lo/st)*st;v<=hi;v+=st){const y=bot-(v-lo)/(hi-lo)*(bot-top);g.strokeStyle=C.grid;g.lineWidth=1;g.beginPath();g.moveTo(PADL,Math.round(y)+.5);g.lineTo(w-AXIS,Math.round(y)+.5);g.stroke();g.fillStyle=C.muted;g.fillText(fmt(v),w-AXIS+6,y)}}
+function timeAxis(g,V,w,y){const b=S.bars;const stepMin=[30,60,120,180,360,720].find(s=>s*V.bw>=80)||1440;g.font=FNUM;g.fillStyle=C.muted;g.textAlign="center";g.textBaseline="top";
+  for(let i=V.start;i<=V.end;i++){const t=b[i].t,d=new Date(t),mins=d.getHours()*60+d.getMinutes();if(mins%stepMin===0){const x=V.x(i);
+    g.strokeStyle=C.grid;g.beginPath();g.moveTo(Math.round(x)+.5,0);g.lineTo(Math.round(x)+.5,y);g.stroke();
+    g.fillText(mins===0?String(d.getDate()).padStart(2,"0")+"."+String(d.getMonth()+1).padStart(2,"0"):hhmm(t),x,y+3)}}}
+function crosshair(g,V,h){if(S.hover==null||S.hover<V.start||S.hover>V.end)return;const x=Math.round(V.x(S.hover))+.5;g.strokeStyle="rgba(200,210,230,.35)";g.setLineDash([3,3]);g.beginPath();g.moveTo(x,0);g.lineTo(x,h);g.stroke();g.setLineDash([])}
+function alpha(hex,a){const n=parseInt(hex.slice(1),16);return`rgba(${n>>16},${n>>8&255},${n&255},${a})`}
+
+function drawPrice(){
+  const {g,w,h}=ctx(cv.price),V=view(w),D=S.D,b=S.bars;if(!V||!D)return;
+  const top=24,axisY=h-18,volH=Math.min(70,h*.2),pBot=axisY-volH-6;
+  let lo=Infinity,hi=-Infinity;for(let i=V.start;i<=V.end;i++){lo=Math.min(lo,b[i].c);hi=Math.max(hi,b[i].c)}
+  const pad=(hi-lo)*.25||hi*.001;lo-=pad;hi+=pad*.6;
+  const y=v=>pBot-(v-lo)/(hi-lo)*(pBot-top);
+  timeAxis(g,V,w,axisY);gridY(g,w,top,pBot,lo,hi,fmtPx);
+  // объём внизу
+  let vmax=0;for(let i=V.start;i<=V.end;i++)vmax=Math.max(vmax,b[i].q);
+  const bw=Math.max(1,V.bw*.8);
+  for(let i=V.start;i<=V.end;i++){const x=V.x(i)-bw/2,hb=b[i].buy/vmax*volH,hs=(b[i].q-b[i].buy)/vmax*volH;
+    g.fillStyle=alpha(C.buy,.45);g.fillRect(x,axisY-hb,bw,hb);g.fillStyle=alpha(C.sell,.4);g.fillRect(x,axisY-hb-hs,bw,hs)}
+  // свечи дисбаланса: покупки — вниз от цены, продажи — вверх
+  const L=(pBot-top)*.4;
+  for(let i=V.start;i<=V.end;i++){const z=D.z[i];if(Math.abs(z)<1.2)continue;const len=Math.min(Math.abs(z)/5,1)*L,yc=y(b[i].c),x=V.x(i)-bw/2,a=Math.min(.35+Math.abs(z)/6,.95);
+    if(z>0){g.fillStyle=alpha(C.buy,a);g.fillRect(x,yc,bw,len)}else{g.fillStyle=alpha(C.sell,a);g.fillRect(x,yc-len,bw,len)}}
+  // линия цены
+  g.strokeStyle=C.price;g.lineWidth=1.3;g.lineJoin="round";g.beginPath();
+  for(let i=V.start;i<=V.end;i++){const X=V.x(i),Y=y(b[i].c);i===V.start?g.moveTo(X,Y):g.lineTo(X,Y)}g.stroke();g.lineWidth=1;
+  // метки RSI
+  g.font=FUI;g.textAlign="center";g.textBaseline="middle";
+  let lastR=-1e9;for(let i=Math.max(V.start,15);i<=V.end;i++){const up=D.rsi[i-1]<30&&D.rsi[i]>=30,dn=D.rsi[i-1]>70&&D.rsi[i]<=70;if(!up&&!dn)continue;if(V.x(i)-lastR<40)continue;lastR=V.x(i);
+    const X=V.x(i),Y=y(b[i].c)+(up?14:-14);g.fillStyle=up?"#c9a227":"#9b5de5";g.fillRect(X-12,Y-7,24,14);g.fillStyle="#111";g.fillText("RSI",X,Y+.5)}
+  // текущая цена
+  const lc=b[V.end].c,ly=y(lc);g.strokeStyle=alpha(C.accent,.7);g.setLineDash([4,4]);g.beginPath();g.moveTo(PADL,Math.round(ly)+.5);g.lineTo(w-AXIS,Math.round(ly)+.5);g.stroke();g.setLineDash([]);
+  g.fillStyle=C.accent;g.fillRect(w-AXIS+2,ly-9,AXIS-4,18);g.fillStyle="#fff";g.font=FNUM_B;g.textAlign="left";g.fillText(fmtPx(lc),w-AXIS+6,ly+.5);
+  crosshair(g,V,h);
+}
+
+function drawWaves(){
+  const {g,w,h}=ctx(cv.waves),V=view(w),D=S.D,b=S.bars;if(!V||!D)return;
+  const top=60,bot=h-40;
+  let mx=D.base*HI*1.25;for(let i=V.start;i<=V.end;i++)mx=Math.max(mx,D.ema[i]);
+  const y=v=>bot-v/mx*(bot-top);
+  timeAxis(g,V,w,bot);
+  g.font=FNUM;g.fillStyle=C.muted;g.textAlign="left";g.textBaseline="middle";
+  const thY=y(D.base*HI);g.strokeStyle="rgba(200,200,210,.35)";g.setLineDash([3,4]);g.beginPath();g.moveTo(PADL,thY);g.lineTo(w-AXIS,thY);g.stroke();g.setLineDash([]);
+  g.fillText("×"+HI+" $"+fmtUsd(D.base*HI),w-AXIS+6,thY);g.fillText("мед "+fmtUsd(D.base),w-AXIS+6,y(D.base));
+  const bw=Math.max(1,V.bw*.9);
+  for(let i=V.start;i<=V.end;i++){const e=D.ema[i],s=D.share[i],x=V.x(i)-bw/2,Y=y(e);
+    const side=s>=.54?1:s<=.46?-1:0,base=side>0?C.buy:side<0?C.sell:C.mixed;const a=Math.min(.35+D.r[i]/4,1);
+    g.fillStyle=alpha(base,a);g.fillRect(x,Y,bw,bot-Y);
+    if(e>D.base*HI&&side!==0){g.fillStyle=side>0?C["buy-hi"]:C["sell-hi"];g.fillRect(x,Y,bw,thY-Y)}}
+  // подписи волн
+  const placed=[];
+  for(const wv of D.waves){if(wv.peakR<WAVE_LABEL||wv.pk<V.start||wv.pk>V.end)continue;
+    const X=V.x(wv.pk),Y=y(D.ema[wv.pk]),col=wv.side>0?C.buy:wv.side<0?C.sell:C.fg;
+    let ty=Y-16;while(placed.some(p=>Math.abs(p.x-X)<92&&Math.abs(p.ty-ty)<26))ty-=6;if(ty<30)continue;placed.push({x:X,ty});
+    
+    g.fillStyle=col;g.beginPath();g.arc(X,Y-3,2.5,0,7);g.fill();
+    g.textAlign="center";g.textBaseline="alphabetic";g.font=FNUM_B;g.fillText("$"+fmtUsd(wv.sum)+" ×"+wv.peakR.toFixed(1),X,ty);
+    g.font=FUI;g.fillText(wv.status,X,ty+12)}
+  // итоги по 3-часовым окнам
+  let k=0;g.textAlign="center";g.textBaseline="top";g.font=FNUM;
+  for(const wn of D.wins){if(wn.e<V.start||wn.s>V.end)continue;const xs=Math.max(V.x(wn.s),PADL+60),xe=Math.min(V.x(wn.e),w-AXIS-60);if(xe-xs<20){k++;continue}
+    const X=(xs+xe)/2,row=k++%2;const col=wn.cls==="обычно"?C.muted:wn.share>=.5?C.buy:C.sell;
+    g.fillStyle=col;g.fillText("Σ $"+fmtUsd(wn.sum)+" ×"+wn.ratio.toFixed(1)+" · "+wn.cls,X,bot+14+row*12)}
+  crosshair(g,V,h);
+}
+
+function drawBook(){
+  const {g,w,h}=ctx(cv.book),V=view(w),D=S.D,b=S.bars;if(!V||!D)return;
+  const top=34,bot=h-18;timeAxis(g,V,w,bot);
+  if(!D.bCount){g.fillStyle=C.muted;g.font=FUI;g.textAlign="center";g.textBaseline="middle";
+    g.fillText(S.mode==="live"?"История стакана копится с момента запуска (Binance не отдаёт её задним числом). Обновление каждые 5 с.":"Нет данных стакана",(w-AXIS)/2,(top+bot)/2);crosshair(g,V,h);return}
+  let mx=1,mn=0;for(let i=V.start;i<=V.end;i++){const v=D.bk[i];if(v){mx=Math.max(mx,v[0]);mn=Math.min(mn,v[0])}}
+  mx*=1.15;mn*=1.15;const y=v=>bot-(v-mn)/(mx-mn)*(bot-top),y0=y(0);
+  gridY(g,w,top,bot,mn,mx,v=>fmtM(v));
+  const hiT=D.bMean+2*D.bStd,loT=D.bMean-2*D.bStd;
+  g.strokeStyle=alpha(C["buy-hi"],.5);g.setLineDash([3,4]);g.beginPath();g.moveTo(PADL,y(hiT));g.lineTo(w-AXIS,y(hiT));g.stroke();g.setLineDash([]);
+  const bw=Math.max(1,V.bw*.85);
+  for(let i=V.start;i<=V.end;i++){const v=D.bk[i];if(!v)continue;const x=V.x(i)-bw/2,Y=y(v[0]);
+    g.fillStyle=v[0]>=hiT?C["buy-hi"]:v[0]<=loT?C["sell-hi"]:v[0]>=0?alpha(C.buy,.6):alpha(C.sell,.6);g.fillRect(x,Math.min(Y,y0),bw,Math.abs(y0-Y))}
+  // пики
+  const placed=[];g.font=FNUM_B;g.textAlign="center";
+  const cand=[];for(let i=V.start;i<=V.end;i++){const v=D.bk[i];if(!v||Math.abs(v[0]-D.bMean)<1.5*D.bStd)continue;let pk=true;for(let j=Math.max(V.start,i-15);j<=Math.min(V.end,i+15);j++){const u=D.bk[j];if(u&&Math.abs(u[0])>Math.abs(v[0])){pk=false;break}}if(pk)cand.push(i)}
+  cand.sort((a,c)=>Math.abs(D.bk[c][0])-Math.abs(D.bk[a][0]));
+  for(const i of cand){const X=V.x(i);if(placed.some(p=>Math.abs(p-X)<46))continue;placed.push(X);const v=D.bk[i][0];
+    g.fillStyle=v>=0?C.buy:C.sell;g.textBaseline=v>=0?"bottom":"top";g.fillText(fmtM(v),X,v>=0?Math.max(top,y(v)-2):Math.min(bot-12,y(v)+2))}
+  crosshair(g,V,h);
+}
+function drawAll(){drawPrice();drawWaves();drawBook()}
+
+function loop(t){
+  if(S.dataDirty&&t-S.lastCompute>400){compute();S.dataDirty=false;S.lastCompute=t;S.drawDirty=true}
+  if(S.drawDirty){drawAll();S.drawDirty=false}
+  requestAnimationFrame(loop);
+}
+
+/* ---------- взаимодействие ---------- */
+const panels=$("panels"),tip=$("tip");
+function hoverAt(clientX){const r=cv.price.getBoundingClientRect(),V=view(r.width);if(!V)return null;const i=V.start+Math.floor((clientX-r.left-PADL)/V.bw);return i>=V.start&&i<=V.end?i:null}
+let drag=null;
+panels.addEventListener("pointerdown",e=>{drag={x:e.clientX,endIdx:view(cv.price.getBoundingClientRect().width)?.end??0};panels.setPointerCapture(e.pointerId)});
+panels.addEventListener("pointerup",()=>drag=null);
+panels.addEventListener("pointercancel",()=>drag=null);
+panels.addEventListener("pointermove",e=>{
+  if(drag){const V=view(cv.price.getBoundingClientRect().width);if(V){const shift=Math.round((drag.x-e.clientX)/V.bw);const n=S.bars.length;let ei=Math.max(Math.min(S.view.span,n)-1,Math.min(n-1,drag.endIdx+shift));S.view.endT=ei>=n-1?null:S.bars[ei].t;S.drawDirty=true}}
+  S.hover=hoverAt(e.clientX);S.drawDirty=true;showTip(e)});
+panels.addEventListener("pointerleave",()=>{S.hover=null;tip.hidden=true;S.drawDirty=true});
+panels.addEventListener("wheel",e=>{e.preventDefault();const n=S.bars.length;S.view.span=Math.round(Math.max(60,Math.min(Math.max(n,60),S.view.span*(e.deltaY>0?1.15:1/1.15))));markSpan();S.drawDirty=true},{passive:false});
+function showTip(e){const i=S.hover;if(i==null||!S.D){tip.hidden=true;return}const b=S.bars[i],D=S.D,bk=S.book[b.t];
+  const sell=b.q-b.buy;let s=hhmm(b.t)+"   "+fmtPx(b.c)+"\nобъём   $"+fmtUsd(b.q)+"  ×"+(b.q/D.base).toFixed(1)+"\nпокупки $"+fmtUsd(b.buy)+"  ("+Math.round(b.buy/b.q*100)+"%)\nпродажи $"+fmtUsd(sell)+"\nдельта  "+fmtM(b.buy-sell)+"\nRSI     "+D.rsi[i].toFixed(0);
+  if(bk)s+="\nстакан  "+fmtM(bk[0])+"\n  биды $"+fmtUsd(bk[1])+" / аски $"+fmtUsd(bk[2]);
+  tip.textContent=s;tip.hidden=false;const tw=tip.offsetWidth,th=tip.offsetHeight;
+  let x=e.clientX+14,y=e.clientY+14;if(x+tw>innerWidth-8)x=e.clientX-tw-14;if(y+th>innerHeight-8)y=e.clientY-th-14;tip.style.left=x+"px";tip.style.top=y+"px"}
+function markSpan(){document.querySelectorAll("#spans button").forEach(b=>b.setAttribute("aria-pressed",String(+b.dataset.span===S.view.span)))}
+document.querySelectorAll("#spans button").forEach(btn=>btn.addEventListener("click",()=>{S.view.span=+btn.dataset.span;S.view.endT=null;markSpan();S.drawDirty=true}));
+addEventListener("resize",()=>S.drawDirty=true);
+$("sym").addEventListener("change",e=>{S.symbol=e.target.value;start()});
+$("src").addEventListener("change",e=>{S.source=e.target.value;start()});
+
+function setConn(cls,txt){$("dot").className="dot "+cls;$("connTxt").textContent=txt}
+function banner(t){const el=$("banner");el.hidden=!t;el.textContent=t||""}
+
+/* ---------- живые данные Binance ---------- */
+function klineToBar(k){return{t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],q:+k[7],buy:+k[10]}}
+async function startLive(gen){
+  const src=SOURCES[S.source],sym=S.symbol;
+  setConn("","загрузка "+src.name+"…");
+  const r=await fetch(`${src.rest}/klines?symbol=${sym}&interval=1m&limit=${src.klineLimit}`);
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  const rows=await r.json();if(gen!==S.gen)return;
+  S.bars=rows.map(klineToBar);S.book=store.get(bookKey())||{};S.mode="live";S.dataDirty=true;
+  pollDepth(gen);S.timers.push(setInterval(()=>pollDepth(gen),5000));S.timers.push(setInterval(saveBook,60000));
+  connectWs(gen,0);
+}
+async function pollDepth(gen){
+  const src=SOURCES[S.source];
+  try{const r=await fetch(`${src.rest}/depth?symbol=${S.symbol}&limit=${src.depthLimit}`);if(!r.ok||gen!==S.gen)return;const d=await r.json();if(gen!==S.gen)return;
+    const bb=+d.bids[0][0],ba=+d.asks[0][0],mid=(bb+ba)/2;let bid=0,ask=0;
+    for(const [p,q] of d.bids){const P=+p;if(P<mid*(1-BOOK_BAND))break;bid+=P*q}
+    for(const [p,q] of d.asks){const P=+p;if(P>mid*(1+BOOK_BAND))break;ask+=P*q}
+    const t=Math.floor(Date.now()/MIN)*MIN;S.book[t]=[bid-ask,bid,ask];S.dataDirty=true;
+  }catch(e){}
+}
+function connectWs(gen,attempt){
+  if(gen!==S.gen)return;const src=SOURCES[S.source];
+  const ws=new WebSocket(src.ws+S.symbol.toLowerCase()+"@kline_1m");S.ws=ws;
+  ws.onopen=()=>{attempt=0;setConn("live","онлайн · "+src.name)};
+  ws.onmessage=ev=>{if(gen!==S.gen)return;const k=JSON.parse(ev.data).data?.k;if(!k)return;upsertBar({t:k.t,o:+k.o,h:+k.h,l:+k.l,c:+k.c,q:+k.q,buy:+k.Q})};
+  ws.onclose=()=>{if(gen!==S.gen)return;setConn("err","переподключение…");setTimeout(()=>connectWs(gen,attempt+1),Math.min(30000,1000*2**attempt))};
+  ws.onerror=()=>ws.close();
+}
+
+/* ---------- демо-режим ---------- */
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function startDemo(gen){
+  const R=rng(42),P0={BTCUSDT:97000,ETHUSDT:3400,SOLUSDT:180}[S.symbol]||100;
+  const st={p:P0,drift:0,burst:0,len:1,side:0,amp:1,book:110e6};
+  function step(t){
+    if(R()<.004)st.drift=(R()-.5)*.00012;
+    if(st.burst<=0&&R()<.012){st.len=st.burst=8+(R()*28|0);st.side=R()<.5?1:R()<.7?-1:0;st.amp=1.5+R()*4.5}
+    let amp=1,side=0;if(st.burst>0){const k=1-st.burst/st.len;amp=1+st.amp*Math.sin(Math.PI*k);side=st.side;st.burst--}
+    const q=2.6e6*(.45+R())*amp,share=Math.min(.9,Math.max(.1,.5+side*.1+(R()-.5)*.14));
+    const ret=st.drift+side*.00012*amp+(R()-.5)*.0011,o=st.p,c=o*(1+ret);st.p=c;
+    st.book+=(105e6-st.book)*.03+(R()-.5)*16e6+(R()<.012?R()*90e6:0)-(side<0?amp*3e6:0);
+    S.book[t]=[st.book,st.book*1.6+400e6,st.book*.6+400e6];
+    return{t,o,h:Math.max(o,c)*(1+R()*.0004),l:Math.min(o,c)*(1-R()*.0004),c,q,buy:q*share};
+  }
+  const now=Math.floor(Date.now()/MIN)*MIN;S.book={};S.bars=[];
+  for(let i=1439;i>=0;i--)S.bars.push(step(now-i*MIN));
+  S.mode="demo";S.dataDirty=true;setConn("demo","демо · данные синтетические");
+  let tick=0;
+  S.timers.push(setInterval(()=>{if(gen!==S.gen)return;tick++;const last=S.bars[S.bars.length-1];
+    if(tick%6===0)upsertBar(step(last.t+MIN));
+    else{const c=last.c*(1+(R()-.5)*.0004),add=4e5*R();upsertBar({...last,c,h:Math.max(last.h,c),l:Math.min(last.l,c),q:last.q+add,buy:last.buy+add*(.35+R()*.3)})}},1000));
+}
+
+/* ---------- запуск ---------- */
+function stopAll(){S.gen++;S.timers.forEach(clearInterval);S.timers=[];if(S.ws){S.ws.onclose=null;try{S.ws.close()}catch(e){}S.ws=null}}
+async function start(){
+  stopAll();const gen=S.gen;S.bars=[];S.book={};S.view.endT=null;S.dataDirty=true;banner("");
+  if(S.source==="demo"){startDemo(gen);return}
+  try{await startLive(gen)}
+  catch(e){if(gen!==S.gen)return;
+    banner("Не удалось подключиться к "+SOURCES[S.source].name+" ("+(e.message||"сеть недоступна")+"). Показаны демо-данные. Откройте index.html в обычном браузере с доступом к Binance, чтобы видеть живой рынок.");
+    startDemo(gen)}
+}
+markSpan();start();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
